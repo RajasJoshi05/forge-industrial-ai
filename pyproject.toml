@@ -7,7 +7,16 @@ name = "industrial-ai-vision-maintenance"
 version = "0.1.0"
 description = "Industrial computer vision and predictive maintenance research platform"
 requires-python = ">=3.12,<3.13"
-dependencies = ["PyYAML>=6.0.2,<7.0"]
+dependencies = [
+    "joblib>=1.4,<2.0",
+    "numpy>=1.26,<3.0",
+    "pandas>=2.2,<4.0",
+    "Pillow>=10.0,<13.0",
+    "pydantic>=2.8,<3.0",
+    "PyYAML>=6.0.2,<7.0",
+    "scikit-learn>=1.5,<2.0",
+    "streamlit>=1.40,<2.0",
+]
 
 [project.optional-dependencies]
 dev = [
