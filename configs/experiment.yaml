@@ -1,0 +1,11 @@
+﻿experiment:
+  name: industrial-baseline
+  random_seed: 42
+
+data:
+  dataset_version: local-v1
+
+training:
+  validation_fraction: 0.2
+  batch_size: 32
+  epochs: 10
