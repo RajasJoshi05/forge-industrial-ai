@@ -42,6 +42,26 @@ def generate_failure_events(
     return sorted(selected)
 
 
+def is_failure_within_warning_window(
+    observation_index: int,
+    failure_indices: list[int],
+    warning_window_minutes: int = WARNING_WINDOW_MINUTES,
+    interval_minutes: int = INTERVAL_MINUTES,
+) -> bool:
+    """Return whether a failure occurs within the configured future warning window."""
+    if interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive.")
+
+    if warning_window_minutes < 0:
+        raise ValueError("warning_window_minutes cannot be negative.")
+
+    warning_steps = warning_window_minutes // interval_minutes
+
+    return any(
+        0 < failure_index - observation_index <= warning_steps for failure_index in failure_indices
+    )
+
+
 def generate_dataset() -> pd.DataFrame:
     """Generate reproducible sensor observations and future-failure labels."""
     rng = np.random.default_rng(SEED)
@@ -82,9 +102,9 @@ def generate_dataset() -> pd.DataFrame:
 
             rotational_speed = speed_baseline - 220.0 * severity + rng.normal(0.0, 20.0)
 
-            failure_within_window = any(
-                0 < failure_index - index <= WARNING_WINDOW_MINUTES // INTERVAL_MINUTES
-                for failure_index in failure_indices
+            failure_within_window = is_failure_within_warning_window(
+                observation_index=index,
+                failure_indices=failure_indices,
             )
 
             records.append(
@@ -93,7 +113,10 @@ def generate_dataset() -> pd.DataFrame:
                     "timestamp": timestamp.isoformat(),
                     "temperature_c": round(float(temperature), 3),
                     "vibration_mm_s": round(float(max(vibration, 0.0)), 3),
-                    "rotational_speed_rpm": round(float(max(rotational_speed, 0.0)), 3),
+                    "rotational_speed_rpm": round(
+                        float(max(rotational_speed, 0.0)),
+                        3,
+                    ),
                     "failure_within_next_30min": int(failure_within_window),
                 }
             )
