@@ -1,0 +1,63 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Test and tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Generated data and model artifacts
+data/raw/*
+data/interim/*
+data/processed/*
+artifacts/models/*
+artifacts/reports/*
+
+# Keep placeholder files
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!artifacts/models/.gitkeep
+!artifacts/reports/.gitkeep
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+
+# Python and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,22 @@
+{
+  "model": "IsolationForest",
+  "sensor_columns": [
+    "temperature_c",
+    "vibration_mm_s",
+    "rotational_speed_rpm"
+  ],
+  "training_method": "Chronological split; model fitted on training partition only",
+  "training_fraction_target": 0.8,
+  "contamination_setting": 0.02,
+  "random_state": 42,
+  "dataset_path": "data\\processed\\industrial_features.csv",
+  "training_rows": 38712,
+  "holdout_rows": 9672,
+  "training_cutoff_utc": "2026-09-12T04:45:00+00:00",
+  "total_rows_scored": 48384,
+  "total_anomalies": 994,
+  "total_anomaly_rate": 0.020543981481481483,
+  "holdout_anomalies": 219,
+  "holdout_anomaly_rate": 0.022642679900744415,
+  "warning": "Anomaly flags indicate unusual sensor patterns, not confirmed failures. The contamination setting is a modeling assumption, not measured accuracy. Failure labels were not used to fit the unsupervised model."
+}
