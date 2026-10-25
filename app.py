@@ -26,6 +26,10 @@ from industrial_ai.monitoring.sensor_health import (  # noqa: E402
 
 DATA_PATH = PROJECT_ROOT / "data" / "processed" / "industrial_features.csv"
 HISTORY_PATH = PROJECT_ROOT / "artifacts" / "reports" / "prediction_history.csv"
+ANOMALY_PREDICTIONS_PATH = (
+    PROJECT_ROOT / "data" / "processed" / "industrial_anomaly_predictions.csv"
+)
+
 
 # ---------------------------------------------------------
 # PAGE CONFIGURATION
@@ -293,6 +297,54 @@ def load_data(path: str) -> pd.DataFrame:
 
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="raise")
     return data
+
+
+@st.cache_data
+def load_anomaly_predictions(path: str) -> pd.DataFrame:
+    """Load and validate saved anomaly-detection predictions."""
+    predictions = pd.read_csv(path)
+
+    required_columns = {
+        "machine_id",
+        "timestamp",
+        "temperature_c",
+        "vibration_mm_s",
+        "rotational_speed_rpm",
+        "anomaly_score",
+        "is_anomaly",
+        "partition",
+    }
+
+    missing = required_columns - set(predictions.columns)
+    if missing:
+        raise ValueError(f"Anomaly predictions are missing columns: {sorted(missing)}")
+
+    if predictions.empty:
+        raise ValueError("Anomaly predictions file contains no rows.")
+
+    predictions["timestamp"] = pd.to_datetime(
+        predictions["timestamp"],
+        utc=True,
+        errors="raise",
+    )
+
+    anomaly_values = (
+        predictions["is_anomaly"]
+        .astype(str)
+        .str.lower()
+        .map({"true": True, "false": False, "1": True, "0": False})
+    )
+
+    if anomaly_values.isna().any():
+        raise ValueError("Anomaly predictions contain invalid is_anomaly values.")
+
+    predictions["is_anomaly"] = anomaly_values
+    predictions["anomaly_score"] = pd.to_numeric(
+        predictions["anomaly_score"],
+        errors="raise",
+    )
+
+    return predictions
 
 
 @st.cache_resource
@@ -788,6 +840,165 @@ else:
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+# ---------------------------------------------------------
+# ANOMALY DETECTION
+# ---------------------------------------------------------
+
+st.markdown(
+    '<div class="section-label">08 / Anomaly detection</div>',
+    unsafe_allow_html=True,
+)
+
+if not ANOMALY_PREDICTIONS_PATH.is_file():
+    st.warning(
+        "Saved anomaly predictions were not found. "
+        "Run the anomaly-training pipeline to generate them."
+    )
+else:
+    try:
+        anomaly_data = load_anomaly_predictions(str(ANOMALY_PREDICTIONS_PATH))
+    except (ValueError, KeyError, OSError, pd.errors.ParserError) as exc:
+        st.error(f"Anomaly monitoring could not be loaded: {exc}")
+    else:
+        total_observations = len(anomaly_data)
+        total_anomalies = int(anomaly_data["is_anomaly"].sum())
+        overall_rate = total_anomalies / total_observations if total_observations else 0.0
+
+        holdout_data = anomaly_data.loc[anomaly_data["partition"] == "holdout"]
+        holdout_anomalies = int(holdout_data["is_anomaly"].sum())
+
+        with st.container(border=True):
+            anomaly_a, anomaly_b, anomaly_c, anomaly_d = st.columns(4)
+
+            anomaly_a.metric(
+                "OBSERVATIONS SCORED",
+                f"{total_observations:,}",
+            )
+            anomaly_b.metric(
+                "ANOMALIES FLAGGED",
+                f"{total_anomalies:,}",
+            )
+            anomaly_c.metric(
+                "OVERALL ANOMALY RATE",
+                f"{overall_rate:.2%}",
+            )
+            anomaly_d.metric(
+                "HOLDOUT ANOMALIES",
+                f"{holdout_anomalies:,}",
+            )
+
+            st.caption(
+                "Results are from the saved Isolation Forest predictions. "
+                "An anomaly is an unusual sensor pattern, not a confirmed failure."
+            )
+
+        machine_anomalies = anomaly_data.loc[anomaly_data["machine_id"] == selected_machine].copy()
+
+        machine_anomalies = machine_anomalies.sort_values("timestamp")
+
+        st.markdown("**SELECTED ASSET / ANOMALY REVIEW**")
+
+        if machine_anomalies.empty:
+            st.info("No anomaly observations are available for this asset.")
+        else:
+            flagged_machine_rows = machine_anomalies.loc[machine_anomalies["is_anomaly"]].copy()
+
+            machine_a, machine_b, machine_c = st.columns(3)
+            machine_a.metric(
+                "ASSET OBSERVATIONS",
+                f"{len(machine_anomalies):,}",
+            )
+            machine_b.metric(
+                "ASSET ANOMALIES",
+                f"{len(flagged_machine_rows):,}",
+            )
+            machine_c.metric(
+                "ASSET ANOMALY RATE",
+                f"{machine_anomalies['is_anomaly'].mean():.2%}",
+            )
+
+            sensor_options = {
+                "Temperature / °C": "temperature_c",
+                "Vibration / mm/s": "vibration_mm_s",
+                "Rotational speed / RPM": "rotational_speed_rpm",
+            }
+
+            selected_anomaly_sensor_label = st.selectbox(
+                "ANOMALY SENSOR CHANNEL",
+                list(sensor_options.keys()),
+                key="anomaly_sensor_channel",
+            )
+            selected_anomaly_sensor = sensor_options[selected_anomaly_sensor_label]
+
+            chart_data = machine_anomalies.tail(500).set_index("timestamp")
+            st.line_chart(
+                chart_data[[selected_anomaly_sensor]],
+                height=300,
+            )
+            st.caption(
+                "Trend shows the latest 500 observations for the selected asset. "
+                "Use the flagged-observations table below to identify anomalies."
+            )
+
+            with st.expander("View flagged observations", expanded=True):
+                if flagged_machine_rows.empty:
+                    st.success("No observations were flagged for this asset.")
+                else:
+                    visible_columns = [
+                        "timestamp",
+                        "machine_id",
+                        "temperature_c",
+                        "vibration_mm_s",
+                        "rotational_speed_rpm",
+                        "anomaly_score",
+                        "partition",
+                    ]
+
+                    st.dataframe(
+                        flagged_machine_rows[visible_columns].sort_values(
+                            "timestamp",
+                            ascending=False,
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "timestamp": st.column_config.DatetimeColumn(
+                                "OBSERVATION TIME (UTC)",
+                                format="YYYY-MM-DD HH:mm:ss",
+                            ),
+                            "machine_id": st.column_config.TextColumn("ASSET"),
+                            "temperature_c": st.column_config.NumberColumn(
+                                "TEMPERATURE °C",
+                                format="%.2f",
+                            ),
+                            "vibration_mm_s": st.column_config.NumberColumn(
+                                "VIBRATION mm/s",
+                                format="%.3f",
+                            ),
+                            "rotational_speed_rpm": st.column_config.NumberColumn(
+                                "SPEED RPM",
+                                format="%.2f",
+                            ),
+                            "anomaly_score": st.column_config.NumberColumn(
+                                "ANOMALY SCORE",
+                                format="%.5f",
+                            ),
+                            "partition": st.column_config.TextColumn("DATA PARTITION"),
+                        },
+                    )
+
+            with st.expander("View all observations for this asset"):
+                st.dataframe(
+                    machine_anomalies.sort_values(
+                        "timestamp",
+                        ascending=False,
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
 
 # ---------------------------------------------------------
 # TECHNICAL DETAILS
