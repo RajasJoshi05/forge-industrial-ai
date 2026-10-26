@@ -163,3 +163,8 @@ Generated datasets, trained model artifacts, and local virtual environments are 
 
 
 An evolving engineering project focused on reliable predictive-maintenance workflows, temporal evaluation, testing, and industrial AI monitoring.
+
+
+the link to the hosting dashboard on the streamlit app 
+
+https://forge-industrial-ai-juxtwshkkerkozvxfdxyue.streamlit.app/?utm_source=chatgpt.com
