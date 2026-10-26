@@ -4,4 +4,5 @@ numpy==2.5.4
 scikit-learn==1.9.1
 joblib==1.6.0
 PyYAML==6.0.3
-Pillow==12.3.0plotly==7.1.0
+Pillow==12.3.0
+plotly==7.1.0
