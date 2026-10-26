@@ -42,3 +42,4 @@ artifacts/reports/*
 .vscode/
 .DS_Store
 Thumbs.db
+data/uploaded_telemetry.csv

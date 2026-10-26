@@ -1,8 +1,53 @@
+import json
 import sys
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+
+# ---------------------------------------------------------
+# MACHINE-SPECIFIC CONFIGURATION STORAGE
+# ---------------------------------------------------------
+
+CONFIG_PATH = (
+    Path(__file__).resolve().parent
+    / "config"
+    / "machine_limits.json"
+)
+
+ASSET_REGISTRY_PATH = (
+    Path(__file__).resolve().parent / "config" / "asset_registry.json"
+)
+
+
+def load_machine_limits() -> dict:
+    """Load saved engineering limits for individual machines."""
+    if not CONFIG_PATH.exists():
+        return {}
+
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as file:
+            saved = json.load(file)
+
+        return saved if isinstance(saved, dict) else {}
+
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_machine_limits(settings: dict) -> None:
+    """Persist machine-specific engineering limits to JSON."""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_path = CONFIG_PATH.with_suffix(".tmp")
+
+    with temporary_path.open("w", encoding="utf-8") as file:
+        json.dump(settings, file, indent=2)
+
+    temporary_path.replace(CONFIG_PATH)
+
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_PATH = PROJECT_ROOT / "src"
@@ -21,6 +66,7 @@ from industrial_ai.monitoring.prediction_history import (  # noqa: E402
     record_prediction,
 )
 from industrial_ai.monitoring.sensor_health import (  # noqa: E402
+    SENSORS,
     monitor_sensor_health,
 )
 
@@ -273,6 +319,101 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+ASSET_REGISTRY_PATH = (
+    Path(__file__).resolve().parent / "config" / "asset_registry.json"
+)
+
+
+TELEMETRY_STORAGE_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "uploaded_telemetry.csv"
+)
+
+
+def save_uploaded_telemetry(
+    telemetry: pd.DataFrame,
+    machine_id: str,
+) -> int:
+    """Append validated telemetry for one registered machine to disk."""
+    required_columns = {
+        "timestamp",
+        "temperature_c",
+        "vibration_mm_s",
+        "rotational_speed_rpm",
+    }
+
+    missing = required_columns - set(telemetry.columns)
+    if missing:
+        raise ValueError(
+            f"Telemetry is missing columns: {sorted(missing)}"
+        )
+
+    if telemetry.empty:
+        raise ValueError("Cannot save an empty telemetry upload.")
+
+    records = telemetry.copy()
+    records["machine_id"] = machine_id
+
+    records["timestamp"] = pd.to_datetime(
+        records["timestamp"],
+        utc=True,
+        errors="raise",
+    )
+
+    TELEMETRY_STORAGE_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if TELEMETRY_STORAGE_PATH.exists():
+        existing = pd.read_csv(TELEMETRY_STORAGE_PATH)
+        combined = pd.concat(
+            [existing, records],
+            ignore_index=True,
+        )
+    else:
+        combined = records
+
+    combined.to_csv(TELEMETRY_STORAGE_PATH, index=False)
+
+    return len(records)
+
+
+
+
+
+
+def load_asset_registry() -> dict:
+    """Load registered industrial assets."""
+    if not ASSET_REGISTRY_PATH.is_file():
+        return {}
+
+    try:
+        with ASSET_REGISTRY_PATH.open("r", encoding="utf-8") as file:
+            registry = json.load(file)
+
+        return registry if isinstance(registry, dict) else {}
+
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_asset_registry(registry: dict) -> None:
+    """Save registered industrial assets."""
+    ASSET_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with ASSET_REGISTRY_PATH.open("w", encoding="utf-8") as file:
+        json.dump(registry, file, indent=2, ensure_ascii=False)
+
+
+
+
+
+
+
+
 # ---------------------------------------------------------
 # DATA ACCESS
 # ---------------------------------------------------------
@@ -297,6 +438,61 @@ def load_data(path: str) -> pd.DataFrame:
 
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="raise")
     return data
+
+
+@st.cache_data
+def load_uploaded_telemetry() -> pd.DataFrame:
+    """Load saved telemetry uploaded for registered industrial assets."""
+    required_columns = {
+        "machine_id",
+        "timestamp",
+        "temperature_c",
+        "vibration_mm_s",
+        "rotational_speed_rpm",
+    }
+
+    if not TELEMETRY_STORAGE_PATH.is_file():
+        return pd.DataFrame(columns=sorted(required_columns))
+
+    telemetry = pd.read_csv(TELEMETRY_STORAGE_PATH)
+
+    missing = required_columns - set(telemetry.columns)
+    if missing:
+        raise ValueError(
+            f"Uploaded telemetry is missing columns: {sorted(missing)}"
+        )
+
+    telemetry["timestamp"] = pd.to_datetime(
+        telemetry["timestamp"],
+        utc=True,
+        errors="coerce",
+    )
+
+    for column in (
+        "temperature_c",
+        "vibration_mm_s",
+        "rotational_speed_rpm",
+    ):
+        telemetry[column] = pd.to_numeric(
+            telemetry[column],
+            errors="coerce",
+        )
+
+    telemetry = telemetry.dropna(
+        subset=[
+            "machine_id",
+            "timestamp",
+            "temperature_c",
+            "vibration_mm_s",
+            "rotational_speed_rpm",
+        ]
+    )
+
+    return telemetry
+
+
+
+
 
 
 @st.cache_data
@@ -362,6 +558,183 @@ def load_history() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+
+# ---------------------------------------------------------
+# ASSET REGISTRY
+# ---------------------------------------------------------
+
+asset_registry = load_asset_registry()
+
+with st.expander("ASSET REGISTRY", expanded=False):
+    st.caption("Registered assets and their telemetry readiness.")
+
+    if not asset_registry:
+        st.info("No custom assets have been registered yet.")
+    else:
+        registry_rows = []
+
+        for asset in asset_registry.values():
+            registry_rows.append(
+                {
+                    "Machine ID": asset.get("machine_id", "Unknown"),
+                    "Name": asset.get("name", "Unnamed asset"),
+                    "Machine Type": asset.get("machine_type", "Not specified"),
+                    "Location": asset.get("location") or "Not specified",
+                    "Status": asset.get(
+                        "status",
+                        "Registered — awaiting telemetry",
+                    ),
+                }
+            )
+
+        st.dataframe(
+            pd.DataFrame(registry_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+
+
+
+
+# ---------------------------------------------------------
+# TELEMETRY CSV IMPORT
+# ---------------------------------------------------------
+
+with st.expander("TELEMETRY IMPORT", expanded=False):
+    st.caption(
+        "Upload sensor readings for a registered machine. "
+        "Validated readings are saved separately from the "
+        "synthetic historical dataset."
+    )
+
+    asset_registry = load_asset_registry()
+
+    if not asset_registry:
+        st.info("Register a machine before importing telemetry.")
+
+    else:
+        asset_options = {
+            f"{asset.get('machine_id', asset_id)} — "
+            f"{asset.get('name', 'Unnamed asset')}": asset_id
+            for asset_id, asset in asset_registry.items()
+        }
+
+        selected_asset_label = st.selectbox(
+            "Registered asset",
+            list(asset_options.keys()),
+            key="telemetry_import_asset",
+        )
+
+        uploaded_telemetry = st.file_uploader(
+            "Upload telemetry CSV",
+            type=["csv"],
+            key="telemetry_csv_upload",
+            help=(
+                "Required columns: timestamp, temperature_c, "
+                "vibration_mm_s, rotational_speed_rpm."
+            ),
+        )
+
+        if uploaded_telemetry is not None:
+            try:
+                uploaded_data = pd.read_csv(uploaded_telemetry)
+
+                required_columns = {
+                    "timestamp",
+                    "temperature_c",
+                    "vibration_mm_s",
+                    "rotational_speed_rpm",
+                }
+
+                missing_columns = required_columns - set(
+                    uploaded_data.columns
+                )
+
+                if missing_columns:
+                    st.error(
+                        "CSV is missing required columns: "
+                        f"{sorted(missing_columns)}"
+                    )
+
+                elif uploaded_data.empty:
+                    st.error("The uploaded CSV contains no data.")
+
+                else:
+                    uploaded_data["timestamp"] = pd.to_datetime(
+                        uploaded_data["timestamp"],
+                        utc=True,
+                        errors="coerce",
+                    )
+
+                    numeric_columns = [
+                        "temperature_c",
+                        "vibration_mm_s",
+                        "rotational_speed_rpm",
+                    ]
+
+                    for column in numeric_columns:
+                        uploaded_data[column] = pd.to_numeric(
+                            uploaded_data[column],
+                            errors="coerce",
+                        )
+
+                    invalid_rows = uploaded_data[
+                        uploaded_data["timestamp"].isna()
+                        | uploaded_data[numeric_columns]
+                        .isna()
+                        .any(axis=1)
+                    ]
+
+                    if not invalid_rows.empty:
+                        st.error(
+                            f"{len(invalid_rows)} row(s) contain invalid "
+                            "timestamps or sensor readings. Correct the "
+                            "CSV and upload it again."
+                        )
+
+                    else:
+                        selected_machine_id = asset_options[
+                            selected_asset_label
+                        ]
+
+                        try:
+                            saved_count = save_uploaded_telemetry(
+                                uploaded_data,
+                                selected_machine_id,
+                            )
+
+                            st.success(
+                                f"Validated and saved {saved_count:,} "
+                                f"readings for {selected_machine_id}."
+                            )
+
+                            st.dataframe(
+                                uploaded_data.head(20),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
+                            st.caption(
+                                "Telemetry is stored separately from "
+                                "the synthetic dataset. Predictions "
+                                "have not been generated."
+                            )
+
+                        except (OSError, ValueError, pd.errors.ParserError) as exc:
+                            st.error(
+                                f"Could not save telemetry: {exc}"
+                            )
+
+            except (
+                ValueError,
+                pd.errors.ParserError,
+                UnicodeDecodeError,
+            ) as exc:
+                st.error(f"Could not read the uploaded CSV: {exc}")
+
+
 # ---------------------------------------------------------
 # APPLICATION HEADER
 # ---------------------------------------------------------
@@ -391,6 +764,7 @@ if not DATA_PATH.is_file():
     st.error(f"Processed dataset not found: {DATA_PATH}")
     st.stop()
 
+# Load the original historical dataset and predictive-maintenance model.
 try:
     data = load_data(str(DATA_PATH))
     predictor = load_predictor()
@@ -398,21 +772,54 @@ except Exception as exc:
     st.error(f"System initialization failed: {exc}")
     st.stop()
 
-machines = sorted(data["machine_id"].dropna().unique().tolist())
+# Load the registered industrial assets.
+asset_registry = load_asset_registry()
+
+registered_machine_ids = [
+    str(asset.get("machine_id", asset_id))
+    for asset_id, asset in asset_registry.items()
+]
+
+# Load telemetry uploaded by users.
+try:
+    uploaded_telemetry = load_uploaded_telemetry()
+except (OSError, ValueError, KeyError, TypeError) as exc:
+    st.error(f"Uploaded telemetry could not be loaded: {exc}")
+    st.stop()
+
+uploaded_machine_ids = (
+    uploaded_telemetry["machine_id"]
+    .dropna()
+    .astype(str)
+    .unique()
+    .tolist()
+)
+
+# Build a unified machine list without modifying the training dataset.
+historical_machine_ids = (
+    data["machine_id"]
+    .dropna()
+    .astype(str)
+    .unique()
+    .tolist()
+)
+
+machines = sorted(
+    set(historical_machine_ids)
+    | set(registered_machine_ids)
+    | set(uploaded_machine_ids)
+)
 
 if not machines:
-    st.error("No machines were found in the dataset.")
+    st.error(
+        "No machines were found in the historical dataset, "
+        "asset registry, or uploaded telemetry."
+    )
     st.stop()
 
-# ---------------------------------------------------------
-# SENSOR HEALTH COMPUTATION
-# ---------------------------------------------------------
 
-try:
-    sensor_health_rows, sensor_health_summary = monitor_sensor_health(data)
-except (ValueError, KeyError, TypeError) as exc:
-    st.error(f"Sensor-health monitoring failed: {exc}")
-    st.stop()
+
+
 
 # ---------------------------------------------------------
 # SIDEBAR
@@ -436,6 +843,170 @@ st.sidebar.markdown(
 
 selected_machine = st.sidebar.selectbox("MACHINE ASSET", machines)
 
+
+
+
+with st.sidebar.expander("＋ Register a machine", expanded=False):
+    st.caption("Add an asset to the FORGE registry.")
+
+    with st.form("register_machine_form", clear_on_submit=True):
+        new_machine_id = st.text_input(
+            "Machine ID",
+            placeholder="e.g. PRESS-001",
+        ).strip().upper()
+
+        new_machine_name = st.text_input(
+            "Display name",
+            placeholder="e.g. Hydraulic Press 01",
+        ).strip()
+
+        new_machine_type = st.selectbox(
+            "Machine type",
+            [
+                "General industrial equipment",
+                "Motor",
+                "Pump",
+                "Compressor",
+                "Conveyor",
+                "Hydraulic press",
+                "CNC machine",
+                "Robotic arm",
+                "Other",
+            ],
+        )
+
+        new_machine_location = st.text_input(
+            "Location / production line",
+            placeholder="e.g. Line A",
+        ).strip()
+
+        register_submitted = st.form_submit_button(
+            "Register asset",
+            use_container_width=True,
+        )
+
+    if register_submitted:
+        if not new_machine_id:
+            st.error("Enter a machine ID.")
+        elif not new_machine_name:
+            st.error("Enter a display name.")
+        elif new_machine_id in machines:
+            st.error(
+                "This machine ID already exists in the telemetry dataset."
+            )
+        else:
+            registry = load_asset_registry()
+
+            if new_machine_id in registry:
+                st.error("This machine ID is already registered.")
+            else:
+                registry[new_machine_id] = {
+                    "machine_id": new_machine_id,
+                    "name": new_machine_name,
+                    "machine_type": new_machine_type,
+                    "location": new_machine_location,
+                    "status": "Registered — awaiting telemetry",
+                }
+
+                try:
+                    save_asset_registry(registry)
+                    st.success(f"Registered {new_machine_id}.")
+                    st.rerun()
+                except OSError as exc:
+                    st.error(
+                        f"Could not save the asset registry: {exc}"
+                    )
+
+
+
+
+
+
+
+
+st.sidebar.divider()
+st.sidebar.markdown("**SENSOR CONFIGURATION**")
+st.sidebar.caption(
+    "Configure review thresholds for the selected asset. "
+    "Use verified machine specifications."
+)
+
+sensor_labels = {
+    "temperature_c": "Temperature (°C)",
+    "vibration_mm_s": "Vibration (mm/s)",
+    "rotational_speed_rpm": "Rotational speed (RPM)",
+}
+
+all_machine_limits = load_machine_limits()
+machine_settings = all_machine_limits.get(selected_machine, {})
+
+with st.sidebar.expander("Engineering limits", expanded=False):
+    configured_limits = {}
+
+    for sensor in SENSORS:
+        st.markdown(f"**{sensor_labels[sensor]}**")
+
+        saved_bounds = machine_settings.get(sensor)
+        enabled_key = f"{selected_machine}_{sensor}_limits_enabled"
+        lower_key = f"{selected_machine}_{sensor}_lower"
+        upper_key = f"{selected_machine}_{sensor}_upper"
+
+        if enabled_key not in st.session_state:
+            st.session_state[enabled_key] = saved_bounds is not None
+
+        if saved_bounds is not None:
+            st.session_state.setdefault(lower_key, float(saved_bounds[0]))
+            st.session_state.setdefault(upper_key, float(saved_bounds[1]))
+
+        enabled = st.checkbox(
+            f"Enable limits for {sensor_labels[sensor]}",
+            key=enabled_key,
+        )
+
+        if enabled:
+            lower = st.number_input(
+                f"Lower limit — {sensor_labels[sensor]}",
+                key=lower_key,
+                value=0.0,
+            )
+            upper = st.number_input(
+                f"Upper limit — {sensor_labels[sensor]}",
+                key=upper_key,
+                value=100.0,
+            )
+
+            if lower >= upper:
+                st.error("The upper limit must be greater than the lower limit.")
+                configured_limits[sensor] = None
+            else:
+                configured_limits[sensor] = (lower, upper)
+        else:
+            configured_limits[sensor] = None
+
+    if st.button("Save machine limits", use_container_width=True):
+        if any(
+            st.session_state.get(f"{selected_machine}_{sensor}_limits_enabled")
+            and configured_limits.get(sensor) is None
+            for sensor in SENSORS
+        ):
+            st.error("Fix invalid limits before saving.")
+        else:
+            all_machine_limits[selected_machine] = {
+                sensor: (
+                    list(configured_limits[sensor])
+                    if configured_limits[sensor] is not None
+                    else None
+                )
+                for sensor in SENSORS
+            }
+
+            try:
+                save_machine_limits(all_machine_limits)
+                st.success(f"Limits saved for {selected_machine}.")
+            except OSError as exc:
+                st.error(f"Could not save machine limits: {exc}")
+
+
 st.sidebar.divider()
 st.sidebar.markdown("**SYSTEM CONTEXT**")
 st.sidebar.caption("Model: Balanced Logistic Regression")
@@ -449,6 +1020,81 @@ st.sidebar.warning("Synthetic data — not live telemetry")
 if st.sidebar.button("Refresh dataset view", use_container_width=True):
     load_data.clear()
     st.rerun()
+
+
+# ---------------------------------------------------------
+# SENSOR HEALTH COMPUTATION
+# ---------------------------------------------------------
+
+all_machine_limits = load_machine_limits()
+
+try:
+    health_results = []
+    health_summaries = []
+
+    for machine_id in machines:
+        machine_data_for_health = data.loc[
+            data["machine_id"] == machine_id
+        ].copy()
+
+        # Skip registered machines that do not have telemetry yet.
+        if machine_data_for_health.empty:
+            continue
+
+        saved_limits = all_machine_limits.get(machine_id, {})
+
+        # Use the current sidebar configuration for the selected machine.
+        if machine_id == selected_machine:
+            saved_limits = {
+                sensor: (
+                    list(configured_limits[sensor])
+                    if configured_limits.get(sensor) is not None
+                    else None
+                )
+                for sensor in SENSORS
+            }
+
+        machine_engineering_limits = {
+            sensor: (
+                tuple(saved_limits[sensor])
+                if saved_limits.get(sensor) is not None
+                else None
+            )
+            for sensor in SENSORS
+        }
+
+        checked_rows, checked_summary = monitor_sensor_health(
+            machine_data_for_health,
+            engineering_limits=machine_engineering_limits,
+        )
+
+        if not checked_rows.empty:
+            health_results.append(checked_rows)
+
+        if not checked_summary.empty:
+            health_summaries.append(checked_summary)
+
+    if health_results and health_summaries:
+        sensor_health_rows = pd.concat(
+            health_results,
+            ignore_index=True,
+        )
+
+        sensor_health_summary = pd.concat(
+            health_summaries,
+            ignore_index=True,
+        )
+    else:
+        sensor_health_rows = pd.DataFrame()
+        sensor_health_summary = pd.DataFrame()
+
+except (ValueError, KeyError, TypeError) as exc:
+    st.error(f"Sensor-health monitoring failed: {exc}")
+    st.stop()
+
+
+
+
 
 # ---------------------------------------------------------
 # FLEET ANALYTICS
@@ -690,8 +1336,10 @@ with st.container(border=True):
 # SENSOR ANALYTICS
 # ---------------------------------------------------------
 
+
+# SENSOR ANALYTICS
 st.markdown(
-    '<div class="section-label">06 / Sensor analytics</div>',
+    '<div class="section-label">04 / Sensor analytics</div>',
     unsafe_allow_html=True,
 )
 
@@ -711,24 +1359,167 @@ with st.container(border=True):
         )
         selected_sensor = sensor_options[selected_sensor_label]
 
-        chart_data = machine_data.set_index("timestamp")[[selected_sensor]].rename(
-            columns={selected_sensor: selected_sensor_label}
+        chart_data = machine_data[
+            ["timestamp", selected_sensor]
+        ].copy()
+
+        chart_data["timestamp"] = pd.to_datetime(
+            chart_data["timestamp"],
+            utc=True,
+            errors="coerce",
+        )
+        chart_data[selected_sensor] = pd.to_numeric(
+            chart_data[selected_sensor],
+            errors="coerce",
         )
 
-        st.line_chart(chart_data, height=320)
+        chart_data = (
+            chart_data
+            .dropna(subset=["timestamp"])
+            .sort_values("timestamp")
+        )
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data["timestamp"],
+                y=chart_data[selected_sensor],
+                mode="lines",
+                name=selected_sensor_label,
+                line={"color": "#36D6C3", "width": 2},
+                connectgaps=False,
+            )
+        )
+
+        active_limits = configured_limits.get(selected_sensor)
+
+        if active_limits is not None:
+            lower_limit, upper_limit = active_limits
+
+            fig.add_hline(
+                y=lower_limit,
+                line_dash="dash",
+                line_color="#FFBE69",
+                annotation_text=f"Lower limit: {lower_limit:g}",
+            )
+
+            fig.add_hline(
+                y=upper_limit,
+                line_dash="dash",
+                line_color="#FF727C",
+                annotation_text=f"Upper limit: {upper_limit:g}",
+            )
+
+            abnormal = chart_data.loc[
+                chart_data[selected_sensor].notna()
+                & (
+                    (chart_data[selected_sensor] < lower_limit)
+                    | (chart_data[selected_sensor] > upper_limit)
+                )
+            ]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=abnormal["timestamp"],
+                    y=abnormal[selected_sensor],
+                    mode="markers",
+                    name="Outside configured limits",
+                    marker={
+                        "color": "#FF454F",
+                        "size": 7,
+                        "symbol": "circle",
+                    },
+                )
+            )
+
+        fig.update_layout(
+            height=380,
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font={
+                "family": "IBM Plex Sans, sans-serif",
+                "color": "#EAF1F7",
+            },
+            margin={"l": 20, "r": 20, "t": 45, "b": 35},
+            legend={"orientation": "h", "y": 1.12},
+            xaxis_title="Timestamp",
+            yaxis_title=selected_sensor_label,
+            hovermode="x unified",
+        )
+
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)")
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
 
     with stats_col:
-        series = machine_data[selected_sensor].dropna()
+        series = pd.to_numeric(
+            machine_data[selected_sensor],
+            errors="coerce",
+        ).dropna()
 
         st.markdown("**CHANNEL SUMMARY**")
 
         if not series.empty:
-            st.metric("LATEST", f"{series.iloc[-1]:,.2f}")
-            st.metric("MEAN", f"{series.mean():,.2f}")
-            st.metric("MINIMUM", f"{series.min():,.2f}")
-            st.metric("MAXIMUM", f"{series.max():,.2f}")
+            st.metric(
+                "Latest reading",
+                f"{series.iloc[-1]:,.2f}",
+            )
 
-        st.caption("Descriptive statistics only; operating safety limits have not been configured.")
+            st.metric(
+                "Average",
+                f"{series.mean():,.2f}",
+            )
+
+            st.metric(
+                "Minimum",
+                f"{series.min():,.2f}",
+            )
+
+            st.metric(
+                "Maximum",
+                f"{series.max():,.2f}",
+            )
+
+            st.metric(
+                "Valid readings",
+                f"{len(series):,}",
+            )
+        else:
+            st.warning("No valid readings are available for this sensor.")
+
+        if active_limits is not None and not series.empty:
+            lower_limit, upper_limit = active_limits
+
+            outside_count = int(
+                ((series < lower_limit) | (series > upper_limit)).sum()
+            )
+
+            st.metric(
+                "Outside configured limits",
+                f"{outside_count:,}",
+            )
+
+            if outside_count:
+                st.warning(
+                    "Some readings exceed the configured limits. "
+                    "Verify these thresholds against machine-specific "
+                    "engineering specifications."
+                )
+            else:
+                st.success("All valid readings are within configured limits.")
+
+        else:
+            st.caption(
+                "Configure lower and upper limits in the sidebar to "
+                "highlight readings outside your selected range."
+            )
+
 
 # ---------------------------------------------------------
 # PREDICTION EVENT LOGGING

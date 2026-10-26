@@ -1,0 +1,9 @@
+{
+  "PRESS-001": {
+    "machine_id": "PRESS-001",
+    "name": "Hydraulic Press 01",
+    "machine_type": "General industrial equipment",
+    "location": "Line A",
+    "status": "Registered — awaiting telemetry"
+  }
+}
